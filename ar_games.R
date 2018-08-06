@@ -1,5 +1,7 @@
 library(foreach)
 library(doParallel)
+library(data.table)
+library(readr)
 registerDoParallel(4)
 getDoParWorkers() 
 setwd("/home/andrey.lisovoy/TEMP_ANDREY/Arena/")
@@ -13,57 +15,59 @@ ArenaBoardConfiguration[ , reward_tiles_multiplier := reward_tiles_weight / sum(
 ArenaRewardsDistConf[ , weight_prcnt := weight/sum(weight)]
                      
 board.set.id <- 2
-num.iter <- 10
-mystery.type.prob <- c(0.25,0.15,0.25,0.15,0.20)
+num.iter <- 20
+mystery.type.prob <- c(0.20,0.20,0.20,0.20,0.20)
 
 ArenaPreCompGames <- data.table()
 ptime <- system.time({
 for(wheel.id in unique(ArenaWheelConfiguration$wheel_id)) {
+  
   wheel_config <- ArenaWheelConfiguration[wheel_id==wheel.id, c("steps", "probability")]
-  out.info <- data.table()
-  out <- foreach(iter = 1:num.iter, .combine=rbind) %dopar% {
+  single.move.data <- data.table()
+  single.cycle.data <- foreach(iter = 1:num.iter, .combine=rbind) %dopar% {
+    
+    item_type <- 0
     tile.id <- 0
     board.id <- 1
     chapter.id <- 1
-    board_config <- ArenaBoardConfiguration[board_set_id==board.set.id & chapter_id==chapter.id & board_id==board.id]
-    boardLength <- max(board_config$tile_id)
-    is.finished <- FALSE
+    is.finished.cycle <- FALSE
     turns_spent <- 0
     extra_turns_left <- 0
+    reward_chapter_multiplier <- 1
     
-    while( !is.finished ) {
+    while( !is.finished.cycle ) {
       
       board_reward_tiles_multiplier <- 0
       board_reward_prcnt <- 0
       chapter_reward_prcnt <- 0
       grand_reward_prcnt <- 0
 
-      if(tile.id==max(board_config$tile_id)){
+      if(item_type==4){
         tile.id <- 0
         board.id <- 1 + board.id %% (max(ArenaRewardsDistConf$board_id, na.rm = TRUE))
         if(board.id==1){ ## means user just completed board 3 and starts now board 1 of next chapter
           reward_chapter_multiplier <- 1 ## since new chapter has started, it should get multiplier=1
           chapter.id <- 1 + chapter.id %% (max(ArenaRewardsDistConf$chapter_id, na.rm = TRUE))
+          }
         }
-        board_config <- ArenaBoardConfiguration[board_set_id==board.set.id & chapter_id==chapter.id & board_id==board.id]
-        boardLength <- max(board_config$tile_id)
-      }
 
+      board_config <- ArenaBoardConfiguration[board_set_id==board.set.id & chapter_id==chapter.id & board_id==board.id]
+      boardLength <- max(board_config$tile_id)
+      
       turns_spent <- ifelse(extra_turns_left==0, turns_spent + 1, turns_spent)
       if(extra_turns_left>0){extra_turns_left <- extra_turns_left-1}
       
       tutorial_scripted_moves <- board_config[tile_id==tile.id, tutorial_scripted_moves]
       steps <- ifelse( !is.na(tutorial_scripted_moves), tutorial_scripted_moves, sample(wheel_config$steps, 1, prob = wheel_config$probability))
       prev.tile.id <- tile.id
-      tile.id <- min(tile.id+steps, max(board_config$tile_id))
-
+      tile.id <- min(tile.id + steps, max(board_config$tile_id))
       item_type <- board_config[tile_id==tile.id, item_type_id]
 
-      ## Let's check if we have passed Milestone (not including landing tile itself since it will be checked after on, regardless)
+      ## Let's check if we have passed Milestone (not including landing tile itself since it will be checked in the regular flow anyway)
       if(nrow(board_config[item_type_id==2 & between(tile_id, prev.tile.id+1, tile.id-1)])>0){
         board_reward_tiles_multiplier <- board_config[item_type_id==2 & between(tile_id, prev.tile.id+1, tile.id-1), sum(reward_tiles_multiplier)] 
         last_board_reward_tiles_multiplier <- board_config[item_type_id==2 & between(tile_id, prev.tile.id+1, tile.id-1), .SD[.N, reward_tiles_multiplier]] 
-        out.info <- rbind(out.info , data.table("wheel_id" = wheel.id, iter, steps, turns_spent, "tile_id" = tile.id, "board_id" = board.id, "chapter_id" = chapter.id, extra_turns_left, "item_type" = 2, reward_chapter_multiplier, board_reward_tiles_multiplier, board_reward_prcnt, chapter_reward_prcnt, grand_reward_prcnt))
+        single.move.data <- rbind(single.move.data , data.table("wheel_id" = wheel.id, iter, steps, turns_spent, "tile_id" = tile.id, "board_id" = board.id, "chapter_id" = chapter.id, extra_turns_left, "item_type" = 2, reward_chapter_multiplier, board_reward_tiles_multiplier, board_reward_prcnt, chapter_reward_prcnt, grand_reward_prcnt))
         board_reward_tiles_multiplier <- 0
         }
       
@@ -88,7 +92,7 @@ for(wheel.id in unique(ArenaWheelConfiguration$wheel_id)) {
             item_type <- 3.2
           } else if (mystery.type.id==3) { ## Adding more items
             reward_items_amount <- ArenaBoardConfiguration[chapter_id==chapter.id & board_id==board.id & tile_id==tile.id, reward_items_amount]
-            more_items <- rbinom(n = 1, size = ceil((boardLength-tile.id)/wheel_config[ , sum(steps * probability)]), p = reward_items_amount / boardLength)
+            more_items <- rbinom(n = 1, size = ceiling((boardLength-tile.id)/wheel_config[ , sum(steps * probability)]), p = reward_items_amount / boardLength)
             board_reward_tiles_multiplier <- more_items * board_config[tile_id==tile.id, reward_tiles_multiplier]
             item_type <- 3.3
           } else if (mystery.type.id==4) { ## Change the Chapter reward
@@ -100,21 +104,21 @@ for(wheel.id in unique(ArenaWheelConfiguration$wheel_id)) {
           } else {print("Unknown Mystery type")}
         }
       
-      if(tile.id >= boardLength){
+      if(item_type == 4){
         board_reward_prcnt <- board_reward_prcnt + ArenaRewardsDistConf[chapter_id==chapter.id & board_id==board.id & is.tile.reward==0, weight_prcnt]
         if(board.id==3){
           chapter_reward_prcnt <- chapter_reward_prcnt + reward_chapter_multiplier * ArenaRewardsDistConf[chapter_id==chapter.id & is.na(board_id) & is.tile.reward==0, weight_prcnt]
           if(chapter.id==3){
             grand_reward_prcnt <- grand_reward_prcnt + ArenaRewardsDistConf[is.na(chapter_id) & is.na(board_id) & is.tile.reward==0, weight_prcnt]
-            is.finished <- TRUE
+            is.finished.cycle <- TRUE
             }
           }
         }
-      out.info <- rbind(out.info , data.table("wheel_id" = wheel.id, iter, steps, turns_spent, "tile_id" = tile.id, "board_id" = board.id, "chapter_id" = chapter.id, extra_turns_left, item_type, reward_chapter_multiplier, board_reward_tiles_multiplier, board_reward_prcnt, chapter_reward_prcnt, grand_reward_prcnt))
+      single.move.data <- rbind(single.move.data , data.table("wheel_id" = wheel.id, iter, steps, turns_spent, "tile_id" = tile.id, "board_id" = board.id, "chapter_id" = chapter.id, extra_turns_left, item_type, reward_chapter_multiplier, board_reward_tiles_multiplier, board_reward_prcnt, chapter_reward_prcnt, grand_reward_prcnt))
     }
-    out.info
+    single.move.data
   }
-  ArenaPreCompGames <- rbind(ArenaPreCompGames, out) 
+  ArenaPreCompGames <- rbind(ArenaPreCompGames, single.cycle.data) 
 }})
 
 stopImplicitCluster()
@@ -128,5 +132,3 @@ ArenaPreCompGames[order(iter, turns_spent, chapter_id, board_id, tile_id), board
 ArenaPreCompGames[ , sub_turn := 1:.N  , .(wheel_id, iter, board_id, chapter_id, turns_spent, tile_id)]
 
 saveRDS(ArenaPreCompGames, file = "ArenaPreCompGames.rds")
-
-##

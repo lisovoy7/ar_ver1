@@ -13,6 +13,7 @@ setwd("/home/andrey.lisovoy/TEMP_ANDREY/Arena/")
 
 connImpala <- "Impala"
 connAnalysis <- paste("Driver=ODBC Driver 13 for SQL Server; Server=10.145.16.22; Database=Analysis;    Uid=r_reader; Pwd=hIDGPJ4ioW2R5AaW7ap7" ,sep='' )
+connHBIPA    <- paste("Driver=ODBC Driver 13 for SQL Server; Server=10.145.16.21; Database=Dwh_Pacific; Uid=r_reader; Pwd=hIDGPJ4ioW2R5AaW7ap7" ,sep='' )
 
 con <- dbConnect(odbc::odbc() , driver="ODBC Driver 13 for SQL Server" ,server="10.145.16.22" ,database="Analysis", uid="r_rw" , pwd="hIDGPJ4ioW2R5AaW7ap7")  
 
@@ -27,7 +28,7 @@ impala.save = function (impala.schema, impala.table, df){
   channel.name <- dbConnect(odbc::odbc() , "Impala",  schema=impala.schema) 
   dbWriteTable(channel.name, impala.table, df[1 : min(1024 , nrow(df)) ] , overwrite=T) 
   i=1
-  while(i < ceil(nrow(df)/1024) ){
+  while(i < ceiling(nrow(df)/1024) ){
     dbWriteTable(channel.name, impala.table, df[ (1024*i+1) : min(1024*(i+1) , nrow(df)) ], append=T)
     i <- i+1
   }
@@ -59,7 +60,7 @@ ArenaWheelConfiguration <- as.data.table(read_delim("~/TEMP_ANDREY/Arena/arena_w
 ArenaWeelEV <- ArenaWheelConfiguration[ , .(ev = sum(steps * probability)) , wheel_id]
 
 ArenaPreCompGames <- readRDS(file = "ArenaPreCompGames.rds")
-TurnsToCompletePerWheel <- ArenaPreCompGames[item_type==4 & board_id==3 & chapter_id==3, .(turns_to_complete = ceil(mean(turns_spent))), .(wheel_id)]
+TurnsToCompletePerWheel <- ArenaPreCompGames[item_type==4 & board_id==3 & chapter_id==3, .(turns_to_complete = ceiling(mean(turns_spent))), .(wheel_id)]
 
 TilesRewardFromSim <- ArenaPreCompGames[, .(total_board_reward_tiles_multiplier = sum(board_reward_tiles_multiplier, na.rm=T)/uniqueN(iter)), .(wheel_id, chapter_id, board_id)]
 names(TilesRewardFromSim)[names(TilesRewardFromSim) == "wheel_id"] <- "wheel.id"
@@ -87,6 +88,7 @@ floor_perc <- 0.5
 sim.date.start <- as.Date('2018-04-27')
 sim.dateid.start = as.integer(gsub("-", "", sim.date.start ))
 sim.dateid.end = as.integer(gsub("-", "", (sim.date.start+(promo.duration-1)) ))
+sim.syssnapshotdateid.end = as.integer(gsub("-", "", (sim.date.start+(promo.duration-1)+1) ))
 seg.dateid.start = as.integer(gsub("-", "", (sim.date.start-(hist.duration+buffer.hist.to.sim) )))
 seg.dateid.end = as.integer(gsub("-", "", (sim.date.start-(buffer.hist.to.sim+1) )))
 seg.date.end = sim.date.start-(buffer.hist.to.sim+1) 
@@ -168,8 +170,8 @@ for(i in apply(ArenaRewardsDistConf[!is.na(chapter_id) & !is.na(board_id) & is.t
 for(i in apply(ArenaRewardsDistConf[!is.na(chapter_id) & !is.na(board_id) & is.tile.reward==1, ], 1, as.list)){
   ArenaPers[ , paste0("chapter",i$chapter_id,"_board",i$board_id,"_tiles_reward") := mapply(find_bord_tiles_reward, arena_all_rewards, i$chapter_id, i$board_id, wheel_id)] }
 
+ArenaPers[ , SysLoadingDate := Sys.time()]
 saveRDS(ArenaPers, file = "ArenaPers.rds")
-
 
 
 ##################################################################################### SIMULATION ##########################################################################################
@@ -186,65 +188,73 @@ ArenaSim <- impala.query(connImpala , paste("
                                                  ) as tmp
                                                )
                                           ,wager as(
-                                                 select userid, sum(wager) as wager, sum(case when spins > 50 then 1 else 0 end) as playing_days, max(trstierid) as trstierid 
+                                                 select userid, sum(wager) as wager, sum(case when spins > 50 then 1 else 0 end) as playing_days
                                                  from(
-                                                   select userid, dateid, sum(mtotalbetsamount) as wager, sum(mbetscount) as spins, max(trstierid) as trstierid 
+                                                   select userid, dateid, sum(mtotalbetsamount) as wager, sum(mbetscount) as spins
                                                    from dwh.dwh_fact_spin_agg 
                                                    where month>=",seg.month.start," and dateid between ",sim.dateid.start, " and ", sim.dateid.end, " and mtotalbetsamount>0 
                                                    group by 1,2
                                                  ) as tmp
                                                  group by 1
                                                )
-                                           select wager.userid, nvl(trstierid, -1) as trstierid, nvl(wager,0) as wager_sim, nvl(playing_days,1) as playing_days, nvl(gross_amount,0) as gross_amount_sim , nvl(turns_purchase,0) as turns_purchase_sim, nvl(moffercoinsamount,0) as moffercoinsamount_sim, ",turns.tutorial, " as turns_tutorial_sim
+                                           select wager.userid, h.trstierid, h.deposithabitgroupid, nvl(wager,0) as wager_sim, nvl(playing_days,0) as playing_days, nvl(gross_amount,0) as gross_amount_sim , nvl(turns_purchase,0) as turns_purchase_sim, nvl(moffercoinsamount,0) as moffercoinsamount_sim, ",turns.tutorial, " as turns_tutorial_sim
                                            from wager
-                                           left join trans on wager.userid=trans.userid"))
+                                           left join trans on wager.userid=trans.userid
+                                           left join dwh.dwh_dim_user_hist as h on wager.userid=h.userid and syssnapshotdateid=" ,sim.syssnapshotdateid.end))
 
 ArenaSim[ , isActiveDepositor := ifelse(gross_amount_sim > 20 , 1, 0)]
-ArenaSim <- merge(ArenaPers, ArenaSim, by = c('userid'), all.x = FALSE,all.y = TRUE)
-ArenaSim[ , turns_wager_sim := ceil(turns_per_meter * (wager_sim / effort_for_meter))]
+ArenaSim <- merge(ArenaPers, ArenaSim, by = c('userid'), all.x = FALSE,all.y = TRUE) ## Right Join (in order to keep logical order of columns I put first HIST data)
+ArenaSim[ , turns_wager_sim := ceiling(turns_per_meter * (wager_sim / effort_for_meter))]
 ArenaSim[ , turns_total_sim := turns_purchase_sim + turns_wager_sim + turns_tutorial_sim]
 ArenaSim[ , iter := sample((max(ArenaPreCompGames$iter) - max_cycles), nrow(ArenaSim), replace = T)]
 ArenaSim <- merge(ArenaSim, ArenaPreCompGames[ , .(turns_spent_across_iter_from = min(turns_spent_across_iter)), .(wheel_id, iter)], by = c('wheel_id', 'iter'), all.x = TRUE,all.y = FALSE)
 
-tmp <- ArenaSim[!is.na(turns_total_sim)]
+ArenaSim <- ArenaSim[!is.na(turns_total_sim)] ## make sure to delate this row - it shouldnt filter NAs
 ArenaSimRaw <- as.data.table(sqldf(paste0("
-SELECT userid, a.wheel_id, gamelevelid, arena_all_rewards, playing_days, isActiveDepositor, turns_purchase_sim, turns_wager_sim, turns_total_sim,  chapter_id, board_id, item_type
-          , max(boards_completed) as boards_completed, sum(board_reward_tiles_multiplier) as board_reward_tiles_multiplier, sum(board_reward_prcnt) as board_reward_prcnt, sum(chapter_reward_prcnt) as chapter_reward_prcnt, sum(grand_reward_prcnt) as grand_reward_prcnt, count(*) 
-FROM tmp as a 
+SELECT userid, (b.iter-a.iter + 1) as cycle_no , chapter_id, board_id, item_type, max(boards_completed) as boards_completed, sum(board_reward_tiles_multiplier) as board_reward_tiles_multiplier, sum(board_reward_prcnt) as board_reward_prcnt, sum(chapter_reward_prcnt) as chapter_reward_prcnt, sum(grand_reward_prcnt) as grand_reward_prcnt, count(*) as cnt 
+FROM ArenaSim as a 
 LEFT JOIN ArenaPreCompGames as b on a.wheel_id = b.wheel_id 
                                      and b.iter >= a.iter 
                                      and b.iter <  a.iter + ", max_cycles, "
                                      and b.turns_spent_across_iter >= a.turns_spent_across_iter_from 
                                      and b.turns_spent_across_iter <  a.turns_spent_across_iter_from + a.turns_total_sim
-GROUP BY userid, a.wheel_id, gamelevelid, arena_all_rewards, playing_days, isActiveDepositor, turns_purchase_sim, turns_wager_sim, turns_total_sim, chapter_id, board_id, item_type")))
+GROUP BY userid, cycle_no, chapter_id, board_id, item_type")))
+
+columns_to_keep <- c("userid", "wheel_id", "gamelevelid", "trstierid", "deposithabitgroupid", "arena_all_rewards", "playing_days", "isActiveDepositor", "turns_purchase_sim", "turns_wager_sim", "turns_total_sim", ArenaRewardsDistConf[!is.na(chapter_id) & !is.na(board_id) & is.tile.reward==1, paste0("chapter",chapter_id,"_board",board_id,"_tiles_reward")])
+ArenaSimRaw <- merge(ArenaSim[ , columns_to_keep, with=FALSE], ArenaSimRaw, by = c('userid'), all.x = TRUE,all.y = FALSE)
 
 
-for(i in apply(ArenaRewardsDistConf[!is.na(chapter_id) & !is.na(board_id), ], 1, as.list)){
+for(i in apply(ArenaRewardsDistConf[!is.na(chapter_id) & !is.na(board_id) & is.tile.reward==1, ], 1, as.list)){
   ArenaSimRaw[chapter_id == i$chapter_id & board_id == i$board_id, tile_reward_sim := get(paste0("chapter",i$chapter_id,"_board",i$board_id,"_tiles_reward")) * board_reward_tiles_multiplier]
   }
 ArenaSimRaw[ , board_reward_sim := board_reward_prcnt * arena_all_rewards]
 ArenaSimRaw[ , chapter_reward_sim := chapter_reward_prcnt * arena_all_rewards]
 ArenaSimRaw[ , grand_reward_sim := grand_reward_prcnt * arena_all_rewards]
+ArenaSimRaw[ , boards_completed := max(boards_completed), userid]
 
 
-
-setkey(ArenaSimRaw, userid, turns_spent)
+setkey(ArenaSimRaw, userid, cycle_no , chapter_id, board_id, item_type)
 saveRDS(ArenaSimRaw, file = "ArenaSimRaw.rds")
 
 
 
-dbWriteTable(con, "arena_turns_acquired", ArenaSimRaw[userid==1341 , `:=` (boards_completed=max(boards_completed), daily_turns_purchase_sim=round(turns_purchase_sim/playing_days,2), daily_turns_wager_sim=round(turns_wager_sim/playing_days,2)) , .(userid, wheel_id, gamelevelid, isActiveDepositor, trstierid)], overwrite=TRUE) 
+dbWriteTable(con, "arena_turns_acquired", ArenaSimRaw[playing_days>0 , .(daily_turns_purchase_sim = min(round(turns_purchase_sim/playing_days,2)), daily_turns_wager_sim = min(round(turns_wager_sim/playing_days,2))), .(userid, wheel_id, trstierid, deposithabitgroupid, boards_completed, gamelevelid, isActiveDepositor)], overwrite=TRUE) 
 
 ## We need to remove rows that landed on empty tile but passed milestone during that move - otherwise they would have counted as emty tile expirience (instead of milestone expirience)
 dbWriteTable(con, "arena_board_experience_precomputed", ArenaPreCompGames[ !(sub_turn>1 & item_type==0), .(count = round(.N / uniqueN(iter),2), board_reward_tiles_multiplier = round(sum(board_reward_tiles_multiplier) / uniqueN(iter),2)) , .(wheel_id, chapter_id, board_id, item_type)], overwrite=TRUE) 
-dbWriteTable(con, "arena_board_experience_simulated", ArenaSimRaw[ !(sub_turn>1 & item_type==0), .(count = round(.N / uniqueN(userid),2), tile_reward_sim = round(sum(tile_reward_sim) / uniqueN(userid),2)) , .(wheel_id, chapter_id, board_id, item_type)], overwrite=TRUE) 
+dbWriteTable(con, "arena_board_experience_simulated", ArenaSimRaw[ !(sub_turn>1 & item_type==0), .(count = round(.N / uniqueN(userid),2), tile_reward_sim = round(sum(tile_reward_sim) / uniqueN(userid),2)) , .(boards_completed, wheel_id, cycle_no, chapter_id, board_id, item_type)], overwrite=TRUE) 
 
 
 
 
 
+## TO DO
 
 ## CHURN users should get this  CONFIG: WHEEL=6, 'turns_trans_effort' by 50$, 'effort_for_meter' based on MAX{10*Balance, MedianWagerNonDepByLevelGroup}
 ## NEW users should get DEFAULT CONFIG: WHEEL=6, 'turns_trans_effort' by 50$, 'effort_for_meter' based on NEW USRES Historical Wager
 ## Non Depos - what Wheel EV te set? Set configuration only for active users during SIM promo - instead of adding all 40M users to ArenaPers. Only in the End provide ArenaPers for all users.
 
+## Create 'SysLoadingDate' column in personalization table
+
+################################################################################# Validation #################################################################################
+ArenaSim[playing_days>0 ,  ':=' (daily_turns_purchase_sim = min(round(turns_purchase_sim/playing_days,2)) , daily_turns_wager_sim = min(round(turns_wager_sim/playing_days,2)))]
