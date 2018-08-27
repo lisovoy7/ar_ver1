@@ -15,7 +15,7 @@ ArenaBoardConfiguration[ , reward_tiles_multiplier := reward_tiles_weight / sum(
 ArenaRewardsDistConf[ , weight_prcnt := weight/sum(weight)]
                      
 board.set.id <- 2
-num.iter <- 20
+num.iter <- 100
 mystery.type.prob <- c(0.20,0.20,0.20,0.20,0.20)
 
 ArenaPreCompGames <- data.table()
@@ -128,7 +128,7 @@ ArenaPreCompGames[order(iter, turns_spent, chapter_id, board_id, tile_id), prev_
 ArenaPreCompGames[order(iter, turns_spent, chapter_id, board_id, tile_id), turns_spent_across_iter := cumsum(turns_spent-prev_turns_spent), .(wheel_id)]
 ArenaPreCompGames$prev_turns_spent <- NULL
 
-ArenaPreCompGames[order(iter, turns_spent, chapter_id, board_id, tile_id), boards_completed := lapply(.SD, function(x) cumsum(ifelse(x==4, 1, 0))), by=.(iter, wheel_id), .SDcols = "item_type"]
+# ArenaPreCompGames[order(iter, turns_spent, chapter_id, board_id, tile_id), boards_completed := lapply(.SD, function(x) cumsum(ifelse(x==4, 1, 0))), by=.(iter, wheel_id), .SDcols = "item_type"]
 ArenaPreCompGames[ , sub_turn := 1:.N  , .(wheel_id, iter, board_id, chapter_id, turns_spent, tile_id)]
 
 saveRDS(ArenaPreCompGames, file = "ArenaPreCompGames.rds")
